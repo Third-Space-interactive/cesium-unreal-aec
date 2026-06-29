@@ -4,8 +4,11 @@
 #include "Cesium3DTileset.h"
 #include "CesiumPointCloudCollisionManager.h"
 #include "CesiumPointCloudCollisionProxy.h"
+#include "CollisionQueryParams.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 
 void UCesiumPointCloudCollisionBlueprintLibrary::
     AddCollisionManagerToAllTilesets(const UObject* WorldContextObject) {
@@ -73,4 +76,84 @@ void UCesiumPointCloudCollisionBlueprintLibrary::
       }
     }
   }
+}
+
+FCesiumPointCloudHit
+UCesiumPointCloudCollisionBlueprintLibrary::QueryPointCloudAlongRay(
+    UObject* WorldContextObject,
+    FVector Origin,
+    FVector Direction,
+    float MaxDistance,
+    ECollisionChannel TraceChannel) {
+  FCesiumPointCloudHit Best;
+  if (!WorldContextObject) {
+    return Best;
+  }
+  UWorld* World = WorldContextObject->GetWorld();
+  if (!World) {
+    return Best;
+  }
+
+  const FVector Dir = Direction.GetSafeNormal();
+  const FVector End = Origin + Dir * MaxDistance;
+
+  // Tier-1 broadphase: all tileset boxes the ray crosses.
+  TArray<FHitResult> Hits;
+  FCollisionQueryParams Params(SCENE_QUERY_STAT(PointCloudBroadphase), true);
+  World->LineTraceMultiByChannel(Hits, Origin, End, TraceChannel, Params);
+
+  double BestDist = MaxDistance;
+  for (const FHitResult& H : Hits) {
+    AActor* Actor = H.GetActor();
+    if (!Actor) {
+      continue;
+    }
+    UCesiumPointCloudCollisionManager* Mgr =
+        Actor->FindComponentByClass<UCesiumPointCloudCollisionManager>();
+    if (!Mgr) {
+      continue;
+    }
+
+    if (!Mgr->bEnablePreciseRefine) {
+      // Phase 1 fallback: use the box hit itself.
+      const double WDist = FVector::Dist(Origin, H.ImpactPoint);
+      if (WDist < BestDist) {
+        BestDist = WDist;
+        Best.bHit = true;
+        Best.Tileset = Cast<ACesium3DTileset>(Actor);
+        Best.WorldPoint = H.ImpactPoint;
+        Best.WorldNormal = H.ImpactNormal;
+        Best.Distance = (float)WDist;
+      }
+      continue;
+    }
+
+    FCesiumPointCloudHit Refined = Mgr->RefineRay(Origin, Dir, MaxDistance);
+    if (Refined.bHit && Refined.Distance < BestDist) {
+      BestDist = Refined.Distance;
+      Best = Refined;
+    }
+  }
+
+  return Best;
+}
+
+FCesiumPointCloudHit
+UCesiumPointCloudCollisionBlueprintLibrary::QueryPointCloudUnderCursor(
+    APlayerController* PlayerController,
+    float MaxDistance) {
+  FCesiumPointCloudHit Best;
+  if (!PlayerController) {
+    return Best;
+  }
+  FVector Origin, Dir;
+  if (!PlayerController->DeprojectMousePositionToWorld(Origin, Dir)) {
+    return Best;
+  }
+  return QueryPointCloudAlongRay(
+      PlayerController,
+      Origin,
+      Dir,
+      MaxDistance,
+      ECC_Visibility);
 }

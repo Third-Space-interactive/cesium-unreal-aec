@@ -22,4 +22,7 @@ public:
 
   /** Blocks only the given trace channel; ignores all others. */
   void ConfigureCollision(ECollisionChannel TraceChannel);
+
+  /** Centers and sizes this box to the given world-space box. */
+  void SetWorldBounds(const FBox& WorldBox);
 };

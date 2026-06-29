@@ -22,6 +22,20 @@ void UCesiumPointCloudCollisionProxy::ConfigureCollision(
   SetCollisionResponseToChannel(TraceChannel, ECR_Block);
 }
 
+void UCesiumPointCloudCollisionProxy::SetWorldBounds(const FBox& WorldBox) {
+  if (!WorldBox.IsValid) {
+    return;
+  }
+  // Enforce a minimum half-extent so near-planar tiles (a flat floor, or a
+  // wall scanned head-on) still produce a non-degenerate, line-trace-hittable
+  // collision box. A zero-thickness box is unreliable for physics queries.
+  constexpr double MinHalfExtent = 1.0; // Unreal units (cm)
+  const FVector Extent =
+      WorldBox.GetExtent().ComponentMax(FVector(MinHalfExtent));
+  SetWorldLocation(WorldBox.GetCenter());
+  SetBoxExtent(Extent, true);
+}
+
 void UCesiumPointCloudCollisionProxy::UpdateBoundsFromTileset() {
   AActor* Owner = GetOwner();
   if (!Owner) {
