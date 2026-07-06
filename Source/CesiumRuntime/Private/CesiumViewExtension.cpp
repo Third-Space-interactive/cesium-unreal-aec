@@ -4,6 +4,7 @@
 
 #include "Cesium3DTileset.h"
 #include "CesiumCommon.h"
+#include "CesiumPointRasterPass.h"
 #include "Runtime/Launch/Resources/Version.h"
 
 using namespace Cesium3DTilesSelection;
@@ -201,6 +202,21 @@ void CesiumViewExtension::PostRenderViewFamily_RenderThread(
       }
     }
   }
+}
+
+void CesiumViewExtension::PostRenderBasePassDeferred_RenderThread(
+    FRDGBuilder& GraphBuilder,
+    FSceneView& InView,
+    const FRenderTargetBindingSlots& RenderTargets,
+    TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures) {
+  // Rasterize points into the GBuffer + depth before deferred lighting. Writing
+  // real depth here also makes the later sky/atmosphere pass depth-test against
+  // the points (no sky clobber), and gives TAA correct depth (no smear).
+  CesiumPointRasterPass::AddRenderPass(
+      GraphBuilder,
+      InView,
+      RenderTargets,
+      SceneTextures);
 }
 
 void CesiumViewExtension::SetEnabled(bool enabled) {

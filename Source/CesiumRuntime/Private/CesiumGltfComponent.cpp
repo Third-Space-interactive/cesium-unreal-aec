@@ -3545,6 +3545,10 @@ ConstructedPrimitiveComponent createPrimitiveComponent(
           tile.getRefine() == Cesium3DTilesSelection::TileRefine::Add;
       pPointMesh->GeometricError = static_cast<float>(tile.getGeometricError());
       pPointMesh->Dimensions = loadResult.dimensions;
+      // isUnlit is true exactly when a points primitive had no usable NORMAL
+      // accessor (CesiumGltfComponent.cpp:1435-1437) -> the packed-tangents
+      // normal is geographic-up, not meaningful for lighting.
+      pPointMesh->bHasRealNormals = !loadResult.isUnlit;
       result.pAsMeshComponent = pPointMesh;
       result.pAsCesiumPrimitive = pPointMesh;
       break;

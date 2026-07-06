@@ -1,0 +1,205 @@
+// Copyright 2020-2025 CesiumGS, Inc. and Contributors
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/DeferredShadingCommon.ush"  // FGBufferData, EncodeGBuffer
+
+// Matches the stock attenuation VF's packed-normal bias ([0,1] UNORM -> [-1,1]),
+// inlined to avoid pulling vertex-factory scaffolding into this global shader.
+float4 CesiumTangentBias(float4 v) { return v * 2.0 - 1.0; }
+
+// Requires SM6.6+ (UlongType / 64-bit atomics). The C++ side gates the shader
+// permutation on FDataDrivenShaderPlatformInfo::GetSupportsUInt64ImageAtomics,
+// so UlongType (== uint64_t) and InterlockedMax on it are always available here.
+
+// ---- Shared raster parameters ----
+Buffer<float> PositionBuffer;   // 3 floats per point (current tile)
+Buffer<float4> ColorBuffer;     // 1 float4 per point (current tile), may be unused
+Buffer<float4> TangentsBuffer;  // packed tangents: 2 float4/point (X at 2i, Z at 2i+1)
+uint NumPoints;
+uint bHasColors;
+uint bHasRealNormals;           // 1 = decode TangentsBuffer normal, 0 = flag synth in resolve
+float4x4 LocalToClip;           // LocalToWorld * TranslatedWorldToClip (CPU-built)
+float4x4 LocalToWorldNormal;    // tile LocalToWorld; upper-3x3 maps local->world normals
+uint2 ViewportSize;             // width, height in pixels (view-local)
+
+RWStructuredBuffer<UlongType> DepthPayloadBuffer; // size = ViewportSize.x * ViewportSize.y
+
+// ---- GBuffer record codec (mirror of CesiumPointGBufferCodec.h) ----
+// Record bits: depth24[63..40] | color24[39..16] | bSynthNormal[15] | oct15[14..0]
+#define CESIUM_NORMAL_MASK  0x7FFFu
+#define CESIUM_DEPTH_SCALE  16777215.0 // float(0xFFFFFF), 24-bit depth
+
+float2 CesiumOctWrap(float2 v) {
+  return float2(
+      (1.0 - abs(v.y)) * (v.x >= 0.0 ? 1.0 : -1.0),
+      (1.0 - abs(v.x)) * (v.y >= 0.0 ? 1.0 : -1.0));
+}
+uint CesiumEncodeNormalOct15(float3 n) {
+  n = normalize(n);
+  float invL1 = 1.0 / (abs(n.x) + abs(n.y) + abs(n.z));
+  float2 p = n.xy * invL1;
+  p = (n.z < 0.0) ? CesiumOctWrap(p) : p;
+  uint u = (uint)clamp(round((p.x * 0.5 + 0.5) * 255.0), 0.0, 255.0); // 8 bits
+  uint v = (uint)clamp(round((p.y * 0.5 + 0.5) * 127.0), 0.0, 127.0); // 7 bits
+  return (u << 7) | v;
+}
+float3 CesiumDecodeNormalOct15(uint oct) {
+  uint u = (oct >> 7) & 0xFFu;
+  uint v = oct & 0x7Fu;
+  float2 f = float2((u / 255.0) * 2.0 - 1.0, (v / 127.0) * 2.0 - 1.0);
+  float3 n = float3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+  float t = saturate(-n.z);
+  n.x += (n.x >= 0.0) ? -t : t;
+  n.y += (n.y >= 0.0) ? -t : t;
+  return normalize(n);
+}
+// Builds the 64-bit value = (depth24<<40)|(color24<<16)|(synth<<15)|oct15, split
+// into low/high 32-bit words for PackUlongType(uint2(lo, hi)).
+UlongType CesiumPackRecord(uint depth24, uint color24, uint bSynth, uint oct15) {
+  uint lo = ((color24 & 0xFFFFu) << 16) | ((bSynth & 1u) << 15) | (oct15 & CESIUM_NORMAL_MASK);
+  uint hi = (depth24 << 8) | ((color24 >> 16) & 0xFFu);
+  return PackUlongType(uint2(lo, hi));
+}
+
+[numthreads(64, 1, 1)] // kPointRasterThreadsPerGroup in CesiumPointRasterPass.cpp
+void RasterPointsCS(uint3 DTid : SV_DispatchThreadID) {
+  const uint pointIndex = DTid.x;
+  if (pointIndex >= NumPoints) {
+    return;
+  }
+
+  float3 localPos = float3(
+      PositionBuffer[pointIndex * 3 + 0],
+      PositionBuffer[pointIndex * 3 + 1],
+      PositionBuffer[pointIndex * 3 + 2]);
+
+  float4 clip = mul(float4(localPos, 1.0), LocalToClip);
+  if (clip.w <= 0.0) {
+    return; // behind camera
+  }
+  float3 ndc = clip.xyz / clip.w;
+  if (any(ndc.xy < -1.0) || any(ndc.xy > 1.0)) {
+    return; // outside frustum laterally
+  }
+
+  // NDC -> pixel. UE: x right, y up in NDC; pixel y is top-down.
+  int2 px = int2(
+      (int)((ndc.x * 0.5 + 0.5) * ViewportSize.x),
+      (int)((1.0 - (ndc.y * 0.5 + 0.5)) * ViewportSize.y));
+  if (px.x < 0 || px.x >= (int)ViewportSize.x ||
+      px.y < 0 || px.y >= (int)ViewportSize.y) {
+    return;
+  }
+
+  uint depth24 = (uint)(saturate(ndc.z) * CESIUM_DEPTH_SCALE); // reversed-Z: bigger = nearer
+
+  uint color24;
+  {
+    float4 c = (bHasColors != 0u)
+        ? ColorBuffer[pointIndex] FMANUALFETCH_COLOR_COMPONENT_SWIZZLE
+        : float4(1, 1, 1, 1);
+    uint3 q = (uint3)(saturate(c.rgb) * 255.0 + 0.5);
+    color24 = (q.b) | (q.g << 8) | (q.r << 16); // BGR -> 24-bit (matches v1 color)
+  }
+
+  uint bSynth = (bHasRealNormals != 0u) ? 0u : 1u;
+  uint oct15 = 0u;
+  if (bSynth == 0u) {
+    // Replicate the stock attenuation VF normal: TangentBias on TangentsBuffer[2i+1],
+    // then local->world via LocalToWorldNormal (CalculateTangentToWorldNoScale).
+    float4 packedZ = TangentsBuffer[2u * pointIndex + 1u];
+    float3 localN = CesiumTangentBias(packedZ).xyz;
+    float3 worldN = normalize(mul(localN, (float3x3)LocalToWorldNormal));
+    oct15 = CesiumEncodeNormalOct15(worldN);
+  }
+
+  UlongType packed = CesiumPackRecord(depth24, color24, bSynth, oct15);
+  uint flatIndex = (uint)px.y * ViewportSize.x + (uint)px.x;
+  InterlockedMax(DepthPayloadBuffer[flatIndex], packed);
+}
+
+// ---- Clear ----
+[numthreads(64, 1, 1)] // kPointRasterThreadsPerGroup in CesiumPointRasterPass.cpp
+void ClearBufferCS(uint3 DTid : SV_DispatchThreadID) {
+  uint flatIndex = DTid.x;
+  if (flatIndex >= ViewportSize.x * ViewportSize.y) {
+    return;
+  }
+  DepthPayloadBuffer[flatIndex] = PackUlongType(uint2(0u, 0u));
+}
+
+// ---- Resolve: emit GBuffer + SV_Depth from the packed record ----
+// Bound to the base pass's GBuffer MRTs (standard deferred layout: SceneColor@0,
+// GBufferA@1, GBufferB@2, GBufferC@3, GBufferD@4) + the depth-stencil. Hardware
+// depth test (reversed-Z greater-equal, write on) occludes points vs scene
+// geometry and writes correct depth for TAA. UE deferred lighting then lights the
+// points like any other DefaultLit surface.
+StructuredBuffer<UlongType> DepthPayloadBufferRead;
+uint2 ViewRectMin;        // view's pixel origin in the full scene-texture buffer
+float PointRoughness;     // from the assigned material (fallback 1.0)
+float PointSpecular;      // from the assigned material (fallback 0.5)
+float PointMetallic;      // from the assigned material (fallback 0.0)
+
+struct FResolveOutput {
+  float4 SceneColor : SV_Target0; // emissive (0 for points)
+  float4 GBufferA : SV_Target1;   // world normal
+  float4 GBufferB : SV_Target2;   // metallic/specular/roughness/shadingmodel
+  float4 GBufferC : SV_Target3;   // base color / AO
+  float4 GBufferD : SV_Target4;   // custom data
+  float Depth : SV_Depth;
+};
+
+void ResolveGBufferPS(
+    float4 SvPosition : SV_Position,
+    out FResolveOutput Out) {
+  int2 px = (int2)SvPosition.xy - (int2)ViewRectMin;
+  if (px.x < 0 || px.y < 0 ||
+      px.x >= (int)ViewportSize.x || px.y >= (int)ViewportSize.y) {
+    discard;
+  }
+  uint flatIndex = (uint)px.y * ViewportSize.x + (uint)px.x;
+  UlongType packed = DepthPayloadBufferRead[flatIndex];
+  uint2 lohi = UnpackUlongType(packed); // .x = lo32, .y = hi32
+  if (lohi.x == 0u && lohi.y == 0u) {
+    discard; // no point hit this pixel
+  }
+  uint depth24 = (lohi.y >> 8) & 0xFFFFFFu;
+  uint color24 = ((lohi.y & 0xFFu) << 16) | (lohi.x >> 16);
+  uint bSynth = (lohi.x >> 15) & 1u;
+  uint oct15 = lohi.x & CESIUM_NORMAL_MASK;
+
+  float3 worldNormal;
+  if (bSynth != 0u) {
+    // Fallback for tiles without real normals (loader wrote geographic-up).
+    // Placeholder: world-up. Replaced by screen-space reconstruction only if the
+    // target data is confirmed to lack normals (see plan Task 4). Tiles WITH real
+    // normals never reach this branch.
+    worldNormal = float3(0, 0, 1);
+  } else {
+    worldNormal = CesiumDecodeNormalOct15(oct15);
+  }
+
+  float3 baseColor = float3(
+      ((color24 >> 16) & 0xFFu) / 255.0,
+      ((color24 >> 8) & 0xFFu) / 255.0,
+      (color24 & 0xFFu) / 255.0);
+
+  FGBufferData GBuffer = (FGBufferData)0;
+  GBuffer.WorldNormal = worldNormal;
+  GBuffer.BaseColor = baseColor;
+  GBuffer.Metallic = PointMetallic;
+  GBuffer.Specular = PointSpecular;
+  GBuffer.Roughness = PointRoughness;
+  GBuffer.GBufferAO = 1.0;
+  GBuffer.PerObjectGBufferData = 1.0;
+  GBuffer.ShadingModelID = SHADINGMODELID_DEFAULT_LIT;
+
+  float4 OutA, OutB, OutC, OutD, OutE, OutVelocity;
+  EncodeGBuffer(GBuffer, OutA, OutB, OutC, OutD, OutE, OutVelocity, 0.0);
+  Out.SceneColor = float4(0, 0, 0, 0); // no emissive; lighting colors the point
+  Out.GBufferA = OutA;
+  Out.GBufferB = OutB;
+  Out.GBufferC = OutC;
+  Out.GBufferD = OutD;
+  Out.Depth = (float)depth24 / CESIUM_DEPTH_SCALE; // reversed-Z device depth
+}

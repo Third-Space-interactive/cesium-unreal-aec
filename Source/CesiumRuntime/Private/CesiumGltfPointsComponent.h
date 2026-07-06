@@ -28,6 +28,11 @@ public:
   // error.
   glm::vec3 Dimensions;
 
+  // True if the source glTF points primitive had a real NORMAL accessor (so the
+  // packed-tangents normal is meaningful). False => loader wrote geographic-up
+  // normals (isUnlit); the compute raster must synthesize a normal instead.
+  bool bHasRealNormals = false;
+
   // Override UPrimitiveComponent interface.
   virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
   virtual void OnCreatePhysicsState() override;

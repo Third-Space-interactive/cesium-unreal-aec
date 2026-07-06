@@ -58,6 +58,10 @@ protected:
 
   virtual uint32 GetMemoryFootprint(void) const override;
 
+  // Keeps the compute-raster registry entry's LocalToWorld current (origin
+  // rebasing / georeference moves). Fires even while main-pass draw is gated off.
+  virtual void OnTransformChanged(FRHICommandListBase& RHICmdList) override;
+
 public:
   void UpdateTilesetData(
       const FCesiumGltfPointsSceneProxyTilesetData& InTilesetData);
@@ -73,6 +77,13 @@ private:
   // The vertex factory and index buffer for point attenuation.
   FCesiumPointAttenuationVertexFactory AttenuationVertexFactory;
   FCesiumPointAttenuationIndexBuffer AttenuationIndexBuffer;
+
+  // Slot in FCesiumPointProxyRegistry while the compute raster path is built,
+  // or INDEX_NONE. Registered on render-thread resource creation.
+  int32 ComputeRasterTileSlot = INDEX_NONE;
+
+  // Cached from the component at construction; copied into the registry entry.
+  bool bHasRealNormals = false;
 
   UMaterialInterface* Material;
   FMaterialRelevance MaterialRelevance;

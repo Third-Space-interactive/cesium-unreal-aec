@@ -2,6 +2,8 @@
 
 #include "CesiumGltfPointsSceneProxy.h"
 #include "CesiumGltfPointsComponent.h"
+#include "CesiumPointComputeRaster.h"
+#include "CesiumPointProxyRegistry.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/StaticMesh.h"
 #include "RHIResources.h"
@@ -47,7 +49,9 @@ FCesiumGltfPointsSceneProxy::FCesiumGltfPointsSceneProxy(
       AttenuationIndexBuffer(NumPoints, bAttenuationSupported),
       Material(InComponent->GetMaterial(0)),
       MaterialRelevance(
-          InSceneInterfaceParams.GetMaterialRelevance(InComponent)) {}
+          InSceneInterfaceParams.GetMaterialRelevance(InComponent)) {
+  bHasRealNormals = InComponent->bHasRealNormals;
+}
 
 FCesiumGltfPointsSceneProxy::~FCesiumGltfPointsSceneProxy() {}
 
@@ -55,11 +59,37 @@ void FCesiumGltfPointsSceneProxy::CreateRenderThreadResources(
     FRHICommandListBase& RHICmdList) {
   AttenuationVertexFactory.InitResource(RHICmdList);
   AttenuationIndexBuffer.InitResource(RHICmdList);
+
+  const FLocalVertexFactory& OriginalVertexFactory =
+      RenderData->LODVertexFactories[0].VertexFactory;
+  FCesiumPointTileEntry Entry;
+  Entry.PositionSRV = OriginalVertexFactory.GetPositionsSRV();
+  Entry.ColorSRV = OriginalVertexFactory.GetColorComponentsSRV();
+  Entry.TangentsSRV = OriginalVertexFactory.GetTangentsSRV();
+  Entry.NumPoints = (uint32)NumPoints;
+  Entry.LocalToWorld = FMatrix44f(GetLocalToWorld());
+  Entry.bHasColors = RenderData->LODResources[0].bHasColorVertexData ? 1u : 0u;
+  Entry.bHasRealNormals = bHasRealNormals ? 1u : 0u;
+  ComputeRasterTileSlot = FCesiumPointProxyRegistry::Get().Register(Entry);
 }
 
 void FCesiumGltfPointsSceneProxy::DestroyRenderThreadResources() {
+  if (ComputeRasterTileSlot != INDEX_NONE) {
+    FCesiumPointProxyRegistry::Get().Unregister(ComputeRasterTileSlot);
+    ComputeRasterTileSlot = INDEX_NONE;
+  }
   AttenuationVertexFactory.ReleaseResource();
   AttenuationIndexBuffer.ReleaseResource();
+}
+
+void FCesiumGltfPointsSceneProxy::OnTransformChanged(
+    FRHICommandListBase& RHICmdList) {
+  FPrimitiveSceneProxy::OnTransformChanged(RHICmdList);
+  if (ComputeRasterTileSlot != INDEX_NONE) {
+    FCesiumPointProxyRegistry::Get().UpdateTransform(
+        ComputeRasterTileSlot,
+        FMatrix44f(GetLocalToWorld()));
+  }
 }
 
 void FCesiumGltfPointsSceneProxy::GetDynamicMeshElements(
@@ -89,7 +119,11 @@ void FCesiumGltfPointsSceneProxy::GetDynamicMeshElements(
 FPrimitiveViewRelevance
 FCesiumGltfPointsSceneProxy::GetViewRelevance(const FSceneView* View) const {
   FPrimitiveViewRelevance Result;
-  Result.bDrawRelevance = IsShown(View);
+  // When the compute raster path is active, this proxy stops feeding the main
+  // pass (that per-tile draw is the InitViews bottleneck). Its GPU buffers stay
+  // alive and are consumed by the compute pass via the registry.
+  Result.bDrawRelevance =
+      IsShown(View) && !CesiumPointComputeRaster::IsActive();
   // Always render dynamically; the appearance of the points can change
   // via point cloud shading.
   Result.bDynamicRelevance = true;

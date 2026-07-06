@@ -19,6 +19,7 @@
 #include "CesiumGltfPointsSceneProxyUpdater.h"
 #include "CesiumGltfPrimitiveComponent.h"
 #include "CesiumLifetime.h"
+#include "CesiumOcclusionCullingPolicy.h"
 #include "CesiumRasterOverlay.h"
 #include "CesiumRuntime.h"
 #include "CesiumRuntimeSettings.h"
@@ -481,9 +482,14 @@ void ACesium3DTileset::SetMaximumScreenSpaceError(
 }
 
 bool ACesium3DTileset::GetEnableOcclusionCulling() const {
-  return GetDefault<UCesiumRuntimeSettings>()
-             ->EnableExperimentalOcclusionCullingFeature &&
-         EnableOcclusionCulling;
+  // Disabled in game worlds — see CesiumOcclusionCullingPolicy.h (PIE/game
+  // no-load latch: BV proxies never get real occlusion results there).
+  const UWorld* pWorld = this->GetWorld();
+  return CesiumOcclusionCullingPolicy::ShouldEnable(
+      GetDefault<UCesiumRuntimeSettings>()
+          ->EnableExperimentalOcclusionCullingFeature,
+      this->EnableOcclusionCulling,
+      pWorld != nullptr && pWorld->IsGameWorld());
 }
 
 void ACesium3DTileset::SetEnableOcclusionCulling(bool bEnableOcclusionCulling) {
@@ -1003,9 +1009,7 @@ void ACesium3DTileset::LoadTileset() {
 
   this->_cesiumViewExtension = cesiumViewExtension;
 
-  if (GetDefault<UCesiumRuntimeSettings>()
-          ->EnableExperimentalOcclusionCullingFeature &&
-      this->EnableOcclusionCulling && !this->BoundingVolumePoolComponent) {
+  if (this->GetEnableOcclusionCulling() && !this->BoundingVolumePoolComponent) {
     const glm::dmat4& cesiumToUnreal =
         GetCesiumTilesetToUnrealRelativeWorldTransform();
     this->BoundingVolumePoolComponent =
@@ -1032,9 +1036,7 @@ void ACesium3DTileset::LoadTileset() {
       asyncSystem,
       pCreditSystem ? pCreditSystem->GetExternalCreditSystem() : nullptr,
       spdlog::default_logger(),
-      (GetDefault<UCesiumRuntimeSettings>()
-           ->EnableExperimentalOcclusionCullingFeature &&
-       this->EnableOcclusionCulling && this->BoundingVolumePoolComponent)
+      (this->GetEnableOcclusionCulling() && this->BoundingVolumePoolComponent)
           ? this->BoundingVolumePoolComponent->getPool()
           : nullptr,
       Cesium3DTilesSelection::TilesetSharedAssetSystem::getDefault(),
@@ -1048,10 +1050,7 @@ void ACesium3DTileset::LoadTileset() {
 
   options.ellipsoid = pNativeEllipsoid;
 
-  options.enableOcclusionCulling =
-      GetDefault<UCesiumRuntimeSettings>()
-          ->EnableExperimentalOcclusionCullingFeature &&
-      this->EnableOcclusionCulling;
+  options.enableOcclusionCulling = this->GetEnableOcclusionCulling();
   options.delayRefinementForOcclusion = this->DelayRefinementForOcclusion;
 
   options.showCreditsOnScreen = ShowCreditsOnScreen;
@@ -1910,10 +1909,7 @@ void ACesium3DTileset::updateTilesetOptionsFromProperties() {
   options.maximumSimultaneousTileLoads = this->MaximumSimultaneousTileLoads;
   options.loadingDescendantLimit = this->LoadingDescendantLimit;
   options.enableFrustumCulling = this->EnableFrustumCulling;
-  options.enableOcclusionCulling =
-      GetDefault<UCesiumRuntimeSettings>()
-          ->EnableExperimentalOcclusionCullingFeature &&
-      this->EnableOcclusionCulling;
+  options.enableOcclusionCulling = this->GetEnableOcclusionCulling();
   options.showCreditsOnScreen = this->ShowCreditsOnScreen;
 
   options.delayRefinementForOcclusion = this->DelayRefinementForOcclusion;

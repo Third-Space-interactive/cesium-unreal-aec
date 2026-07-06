@@ -4,6 +4,7 @@
 
 #include "Containers/Queue.h"
 #include "Containers/Set.h"
+#include "PostProcess/PostProcessInputs.h"
 #include "Runtime/Renderer/Private/ScenePrivate.h"
 #include "SceneTypes.h"
 #include "SceneView.h"
@@ -111,6 +112,14 @@ public:
   void PostRenderViewFamily_RenderThread(
       FRDGBuilder& GraphBuilder,
       FSceneViewFamily& InViewFamily) override;
+  // Pre-lighting hook: rasterize point clouds into the GBuffer + depth so they
+  // receive deferred lighting and TAA gets correct depth.
+  void PostRenderBasePassDeferred_RenderThread(
+      FRDGBuilder& GraphBuilder,
+      FSceneView& InView,
+      const FRenderTargetBindingSlots& RenderTargets,
+      TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures)
+      override;
 
   void SetEnabled(bool enabled);
 };
