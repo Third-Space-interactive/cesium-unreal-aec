@@ -1,3 +1,36 @@
+# Cesium for Unreal — AEC point-cloud fork
+
+> A fork of [Cesium for Unreal](https://github.com/CesiumGS/cesium-unreal) with runtime point-cloud collision, surface-accurate picking, and GPU compute-raster rendering — built for AEC / heritage digital-twin scenes running hundreds of streaming point-cloud tilesets at once. Everything below the divider is the upstream Cesium for Unreal README, unchanged.
+
+## What this fork adds
+
+All additions are additive — no existing Cesium source is modified — and land in the `CesiumRuntime` module. The work is organized into three milestones (see `git log`):
+
+- **Phase 1 — Point-cloud collision proxies.** Whole-tileset runtime collision for point-cloud 3D Tilesets: one `QueryOnly` `UBoxComponent` per tileset (`UCesiumPointCloudCollisionProxy`) driven by a lifecycle manager, plus a Blueprint utility library for line-trace queries.
+- **Phase 2 — Surface-accurate point-cloud picking.** Two-tier hit-testing on top of Phase 1: a cursor ray returns a precise point on the real cloud surface with a PCA-estimated normal, correct depth ordering, and whole-tileset identity — robust to outliers, riding the LOD stream, cheap at ~900 simultaneous tilesets. Tier 1 is a percentile-trimmed / MAD-rejection broadphase box; Tier 2 is a lazy per-tile voxel index with 3D-DDA ray-march. Blueprint API: `QueryPointCloudAlongRay` / `QueryPointCloudUnderCursor` → `FCesiumPointCloudHit`.
+- **Phase 3 — GPU compute-raster point rendering.** Renders point clouds through a custom RDG compute-raster pass instead of the main geometry pass — a render-thread point-proxy registry feeds compute shaders that rasterize into a lit GBuffer (depth + octahedral normal + color), gated behind a CVar and a GPU capability probe.
+
+## Setup
+
+This is an Unreal **plugin** with **git submodules** (`cesium-native` and friends), not a standalone app — a plain `git clone` leaves the submodules empty and it won't build.
+
+```sh
+# Clone with submodules (checks out `main` by default):
+git clone --recurse-submodules https://github.com/Third-Space-interactive/cesium-unreal-aec.git
+
+# Already did a plain clone? Fill in the submodules without re-cloning:
+cd cesium-unreal-aec
+git submodule update --init --recursive
+```
+
+Then:
+
+1. **Place it in a UE project's `Plugins/` folder.** Clone directly into `<YourProject>/Plugins/CesiumForUnreal`, or clone elsewhere and add a directory junction/symlink into `Plugins/`.
+2. **First build compiles `cesium-native`'s ThirdParty libraries** — expect a long initial build on a fresh machine. See the [Developer Setup Guide](Documentation/developer-setup.md).
+3. **`EngineVersion` is pinned to `5.5.0`** in `CesiumForUnreal.uplugin` for broad compatibility. Running the headless automation suite needs it bumped to your editor's version locally (otherwise `-unattended` auto-declines the incompatible-plugin dialog and the module never loads) — keep that a local, uncommitted edit.
+
+---
+
 [![Cesium for Unreal Logo](Content/Cesium-for-Unreal-Logo-WhiteBGH.jpg)](https://cesium.com/unreal-marketplace?utm_source=cesium-unreal&utm_medium=github&utm_campaign=unreal)
 
 Cesium for Unreal brings the 3D geospatial ecosystem to Unreal Engine. By combining a high-accuracy full-scale WGS84 globe, open APIs and open standards for spatial indexing such as 3D Tiles, and cloud-based real-world content from [Cesium ion](https://cesium.com/cesium-ion) with Unreal Engine, this project enables a new era of 3D geospatial software.
