@@ -4283,6 +4283,23 @@ void UCesiumGltfComponent::SetCollisionEnabled(
   }
 }
 
+void UCesiumGltfComponent::SetCustomDepthParameters(
+    FCustomDepthParameters Parameters) {
+  this->CustomDepthParameters = Parameters;
+  // Covers both mesh and point primitives; each setter marks render state dirty.
+  for (USceneComponent* pSceneComponent : this->GetAttachChildren()) {
+    UCesiumGltfPrimitiveComponent* pPrimitive =
+        Cast<UCesiumGltfPrimitiveComponent>(pSceneComponent);
+    if (pPrimitive) {
+      pPrimitive->SetRenderCustomDepth(Parameters.RenderCustomDepth);
+      pPrimitive->SetCustomDepthStencilWriteMask(
+          Parameters.CustomDepthStencilWriteMask);
+      pPrimitive->SetCustomDepthStencilValue(
+          Parameters.CustomDepthStencilValue);
+    }
+  }
+}
+
 void UCesiumGltfComponent::BeginDestroy() {
   // Clear everything we can in order to reduce memory usage, because this
   // UObject might not actually get deleted by the garbage collector until

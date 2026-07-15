@@ -590,7 +590,18 @@ void ACesium3DTileset::SetCustomDepthParameters(
     FCustomDepthParameters InCustomDepthParameters) {
   if (this->CustomDepthParameters != InCustomDepthParameters) {
     this->CustomDepthParameters = InCustomDepthParameters;
-    this->DestroyTileset();
+    // Apply live instead of DestroyTileset(): avoids re-streaming every tile.
+    this->ApplyCustomDepthParameters();
+  }
+}
+
+void ACesium3DTileset::ApplyCustomDepthParameters() {
+  TInlineComponentArray<UCesiumGltfComponent*> gltfComponents;
+  this->GetComponents<UCesiumGltfComponent>(gltfComponents);
+  for (UCesiumGltfComponent* pGltf : gltfComponents) {
+    if (pGltf) {
+      pGltf->SetCustomDepthParameters(this->CustomDepthParameters);
+    }
   }
 }
 
@@ -2299,6 +2310,14 @@ void ACesium3DTileset::PostEditChangeProperty(
   FName PropName = PropertyChangedEvent.Property->GetFName();
   FString PropNameAsString = PropertyChangedEvent.Property->GetName();
 
+  // Apply CustomDepth live instead of DestroyTileset() to avoid re-streaming.
+  if (PropNameAsString == TEXT("RenderCustomDepth") ||
+      PropNameAsString == TEXT("CustomDepthStencilValue") ||
+      PropNameAsString == TEXT("CustomDepthStencilWriteMask")) {
+    this->ApplyCustomDepthParameters();
+    return;
+  }
+
   if (PropName == GET_MEMBER_NAME_CHECKED(ACesium3DTileset, TilesetSource) ||
       PropName == GET_MEMBER_NAME_CHECKED(ACesium3DTileset, Url) ||
       PropName == GET_MEMBER_NAME_CHECKED(ACesium3DTileset, IonAssetID) ||
@@ -2337,9 +2356,6 @@ void ACesium3DTileset::PostEditChangeProperty(
           GET_MEMBER_NAME_CHECKED(ACesium3DTileset, TranslucencySortPriority) ||
       // For properties nested in structs, GET_MEMBER_NAME_CHECKED will prefix
       // with the struct name, so just do a manual string comparison.
-      PropNameAsString == TEXT("RenderCustomDepth") ||
-      PropNameAsString == TEXT("CustomDepthStencilValue") ||
-      PropNameAsString == TEXT("CustomDepthStencilWriteMask") ||
       PropNameAsString == TEXT("ReceiveDecals")) {
     this->DestroyTileset();
   } else if (

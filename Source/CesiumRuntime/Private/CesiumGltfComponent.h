@@ -132,6 +132,9 @@ public:
   UFUNCTION(BlueprintCallable, Category = "Collision")
   virtual void SetCollisionEnabled(ECollisionEnabled::Type NewType);
 
+  /** Applies CustomDepth parameters to this tile's primitives live (no recreate). */
+  void SetCustomDepthParameters(FCustomDepthParameters Parameters);
+
   virtual void BeginDestroy() override;
   virtual void OnVisibilityChanged() override;
 

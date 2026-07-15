@@ -1293,6 +1293,9 @@ private:
   void LoadTileset();
   void DestroyTileset();
 
+  /** Pushes current CustomDepthParameters to streamed tiles live (no re-stream). */
+  void ApplyCustomDepthParameters();
+
   static Cesium3DTilesSelection::ViewState CreateViewStateFromViewParameters(
       const FCesiumCamera& camera,
       const glm::dmat4& unrealWorldToTileset,
