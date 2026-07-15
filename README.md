@@ -26,8 +26,17 @@ git submodule update --init --recursive
 Then:
 
 1. **Place it in a UE project's `Plugins/` folder.** Clone directly into `<YourProject>/Plugins/CesiumForUnreal`, or clone elsewhere and add a directory junction/symlink into `Plugins/`.
-2. **First build compiles `cesium-native`'s ThirdParty libraries** — expect a long initial build on a fresh machine. See the [Developer Setup Guide](Documentation/developer-setup.md).
-3. **`EngineVersion` is pinned to `5.5.0`** in `CesiumForUnreal.uplugin` for broad compatibility. Running the headless automation suite needs it bumped to your editor's version locally (otherwise `-unattended` auto-declines the incompatible-plugin dialog and the module never loads) — keep that a local, uncommitted edit.
+2. **Build `cesium-native` once per machine.** The compiled cesium-native headers/libs live under `Source/ThirdParty/` and are **git-ignored** — they are generated, never committed — so every developer builds them locally from the `extern/cesium-native` submodule. Requires **CMake 3.15+** and **Visual Studio 2022** (C++ toolchain); optionally [nasm](https://www.nasm.us/) for faster JPEG decoding. From an *"x64 Native Tools Command Prompt for VS 2022"*:
+
+   ```bat
+   cd <your-clone>\extern
+   cmake -B build -S . -G "Visual Studio 17 2022" -A x64
+   cmake --build build --config Release --target install
+   ```
+
+   The `install` target writes headers/libs into `Source/ThirdParty/…`. Expect **20–40+ min** the first time (it also builds the vcpkg dependencies). Add `--config Debug` for a debug build too if you'll debug in-editor. See the [Developer Setup Guide](Documentation/developer-setup.md) for macOS/Linux/Android and CMake-GUI variants.
+3. **Then build the UE project.** Regenerate the Visual Studio project files from the `.uproject` and build — the cesium-native includes will now resolve.
+4. **`EngineVersion` is pinned to `5.5.0`** in `CesiumForUnreal.uplugin` for broad compatibility. Running the headless automation suite needs it bumped to your editor's version locally (otherwise `-unattended` auto-declines the incompatible-plugin dialog and the module never loads) — keep that a local, uncommitted edit.
 
 ---
 
