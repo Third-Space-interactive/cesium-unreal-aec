@@ -119,22 +119,28 @@ void FCesiumGltfPointsSceneProxy::GetDynamicMeshElements(
 FPrimitiveViewRelevance
 FCesiumGltfPointsSceneProxy::GetViewRelevance(const FSceneView* View) const {
   FPrimitiveViewRelevance Result;
-  // When the compute raster path is active, this proxy stops feeding the main
-  // pass (that per-tile draw is the InitViews bottleneck). Its GPU buffers stay
-  // alive and are consumed by the compute pass via the registry.
+  // Under compute raster this proxy is normally gated out of all stock passes
+  // (the compute pass draws the points). Exception: a hover-highlighted tileset
+  // (RenderCustomDepth) keeps draw relevance and emits ONLY the stock custom-depth
+  // pass, populating CustomStencil for the outline post-process with occlusion,
+  // via engine machinery. Main/depth/shadow stay suppressed so the compute pass
+  // remains the sole visible renderer. Cost: re-including these tiles restores
+  // their InitViews render-thread cost, so highlight scales with tile count.
+  const bool bComputeActive = CesiumPointComputeRaster::IsActive();
+  const bool bWantCustomDepth = ShouldRenderCustomDepth();
   Result.bDrawRelevance =
-      IsShown(View) && !CesiumPointComputeRaster::IsActive();
+      IsShown(View) && (!bComputeActive || bWantCustomDepth);
   // Always render dynamically; the appearance of the points can change
   // via point cloud shading.
   Result.bDynamicRelevance = true;
   Result.bStaticRelevance = false;
 
-  Result.bRenderCustomDepth = ShouldRenderCustomDepth();
-  Result.bRenderInMainPass = ShouldRenderInMainPass();
-  Result.bRenderInDepthPass = ShouldRenderInDepthPass();
+  Result.bRenderCustomDepth = bWantCustomDepth;
+  Result.bRenderInMainPass = ShouldRenderInMainPass() && !bComputeActive;
+  Result.bRenderInDepthPass = ShouldRenderInDepthPass() && !bComputeActive;
   Result.bUsesLightingChannels =
       GetLightingChannelMask() != GetDefaultLightingChannelMask();
-  Result.bShadowRelevance = IsShadowCast(View);
+  Result.bShadowRelevance = IsShadowCast(View) && !bComputeActive;
   Result.bVelocityRelevance =
       IsMovable() & Result.bOpaque & Result.bRenderInMainPass;
 
